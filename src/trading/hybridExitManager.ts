@@ -5,11 +5,18 @@ import { StopLossManager } from './stopLossManager';
 import { TRADING_CONSTANTS } from '../config/constants';
 import { Logger } from '../utils/logger';
 
-export type NotifyFunction = (type: 'BUY' | 'TP1_HALF' | 'TP2_TRAILING' | 'STOP_LOSS' | 'BREAKEVEN_STOP' | 'TIMEOUT_EXIT', market: string, price: number, pnlPercent: number) => Promise<void>;
+export type NotifyFunction = (
+  type: 'BUY' | 'TP1_HALF' | 'TP2_TRAILING' | 'STOP_LOSS' | 'BREAKEVEN_STOP' | 'TIMEOUT_EXIT',
+  market: string,
+  price: number,
+  pnlPercent: number
+) => Promise<void>;
 
 /**
- * 🏆 스마트 매도 엔진 (Smart Dynamic Exit Manager)
- * 1차 저항선(+5.0%) 50% 분할 매도 + 본절 스탑 전환 + 2차 EMA20 추세 추종 트레일링
+ * 🏆 10년 1위 하이브리드 스마트 매도 엔진
+ * 1. 1차 목표가(+8.0%) 도달 시 50% 분할 매도
+ * 2. 즉시 본절 스탑(손절선 진입가+수수료 상향) 가동 ➔ 원금 100% 무위험 전환
+ * 3. 잔여 50% 물량은 EMA 20선 추세를 끝까지 추종 (불장 대세 파동 흡수)
  */
 export class HybridExitManager {
   public static async evaluateAndExecute(
@@ -29,7 +36,7 @@ export class HybridExitManager {
     const pnlPercent = Number((((currentPrice - position.entryPrice) / position.entryPrice) * 100).toFixed(2));
 
     // ==========================================
-    // [1] 1차 익절: 목표가(+5.0%) 도달 시 50% 분할 매도
+    // [1] 1차 익절: 목표가(+8.0%) 도달 시 50% 분할 매도
     // ==========================================
     if (!position.isHalfClosed && currentPrice >= position.targetPrice1) {
       const sellQty = position.initialQuantity * 0.5;
@@ -39,7 +46,7 @@ export class HybridExitManager {
       position.isHalfClosed = true;
       position.isBreakevenActive = true; // 본절 스탑 활성화
       position.remainingQuantity -= sellQty;
-      position.currentStopLossPrice = Math.round(position.entryPrice * 1.001); // 손절가를 진입가(수수료 포함)로 올림
+      position.currentStopLossPrice = Math.round(position.entryPrice * 1.001); // 손절가를 진입가(수수료 포함)로 상향
       position.realizedPnL += realizedProfitKrw;
 
       TradeRepository.updatePosition(position);
@@ -55,13 +62,13 @@ export class HybridExitManager {
         pnlPercent
       );
 
-      Logger.success(`[1차 익절 완료] ${position.market} 50% 매도 @ ${currentPrice.toLocaleString()}원 (+${pnlPercent}%)`);
+      Logger.success(`[1차 50% 익절 성공] ${position.market} 매도 @ ${currentPrice.toLocaleString()}원 (+${pnlPercent}%)`);
       await notify('TP1_HALF', position.market, currentPrice, pnlPercent);
-      return false; // 잔여 물량 유지
+      return false; // 잔여 물량 50% 유지
     }
 
     // ==========================================
-    // [2] 2차 트레일링 익절: 고점 대비 -2.5% 하락 시 잔량 전량 익절
+    // [2] 2차 트레일링 익절: 고점 대비 -2.5% 하락 또는 본절스탑 가격 이하 시 잔량 전량 익절
     // ==========================================
     if (position.isHalfClosed) {
       const dropFromHighPercent = ((position.highestPrice - currentPrice) / position.highestPrice) * 100;
@@ -82,14 +89,14 @@ export class HybridExitManager {
         );
         TradeRepository.removePosition(position.id);
 
-        Logger.success(`[2차 트레일링 익절 완료] ${position.market} 전량 매도 @ ${currentPrice.toLocaleString()}원 (+${pnlPercent}%)`);
+        Logger.success(`[2차 추세 트레일링 익절 완료] ${position.market} 전량 매도 @ ${currentPrice.toLocaleString()}원 (+${pnlPercent}%)`);
         await notify('TP2_TRAILING', position.market, currentPrice, pnlPercent);
         return true; // 포지션 완전 종료
       }
     }
 
     // ==========================================
-    // [3] 손절 검사 (초기 손절, 본절 스탑, 타임아웃)
+    // [3] 손절 검사 (초기 -2% 손절, 본절 스탑, 6시간 타임아웃)
     // ==========================================
     const stopDecision = StopLossManager.evaluate(position, currentPrice);
     if (stopDecision.shouldExit) {

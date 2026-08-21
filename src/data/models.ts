@@ -62,9 +62,18 @@ export interface TradeSignal {
   reasons: string[];           // 신호 발생 근거 목록
   currentPrice: number;
   suggestedStopLoss: number;   // 제안된 초기 손절가
-  suggestedTargetPrice: number;// 제안된 1차 목표가 (+2.0%~+2.5%)
+  suggestedTargetPrice: number;// 제안된 1차 목표가 (+8.0%)
   riskRewardRatio: number;     // 계산된 손익비
   timestamp: number;
+}
+
+export interface TargetPriceResult {
+  targetPrice1: number;
+  targetPercent1: number;
+  initialStopLossPrice: number;
+  stopLossPercent: number;
+  breakEvenPrice: number;
+  riskRewardRatio: number;
 }
 
 // === 하이브리드 포지션 관리 모델 ===

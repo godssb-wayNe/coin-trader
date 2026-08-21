@@ -1,6 +1,19 @@
 import { db } from './database';
 import { HybridPosition } from './models';
 
+export interface TradeRecord {
+  id: string;
+  positionId: string;
+  market: string;
+  side: string;
+  price: number;
+  quantity: number;
+  fee: number;
+  netPnL: number;
+  pnlPercent: number;
+  timestamp: number;
+}
+
 /**
  * 데이터베이스 영속성 계층 (Repository Pattern)
  * 비즈니스 로직과 데이터베이스 쿼리를 완전히 분리하여 유지보수성을 극대화합니다.
@@ -114,6 +127,28 @@ export class TradeRepository {
     `);
 
     stmt.run(id, positionId, market, side, price, quantity, fee, pnlKrw, pnlPercent, Date.now());
+  }
+
+  /**
+   * 당일(오늘 00:00 KST 이후) 체결된 거래 내역 조회
+   */
+  public static getTodayTrades(): TradeRecord[] {
+    const now = new Date();
+    const kstMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).getTime();
+    
+    const rows = db.prepare('SELECT * FROM trade_history WHERE timestamp >= ?').all(kstMidnight) as any[];
+    return rows.map((r) => ({
+      id: r.id,
+      positionId: r.position_id,
+      market: r.market,
+      side: r.side,
+      price: r.price,
+      quantity: r.quantity,
+      fee: r.fee,
+      netPnL: r.pnl_krw,
+      pnlPercent: r.pnl_percent,
+      timestamp: r.timestamp
+    }));
   }
 
   /**

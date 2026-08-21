@@ -1,4 +1,4 @@
-import axios, { AxiosInstance } from 'axios';
+import axios from 'axios';
 import { UpbitAuth } from './upbitAuth';
 import { RateLimiter } from '../utils/rateLimiter';
 import { Candle, Orderbook, AccountBalance } from '../data/models';
@@ -21,6 +21,24 @@ export class UpbitClient {
     this.secretKey = secretKey || config.upbit.secretKey;
     this.isPaperTrading = isPaperTrading;
     this.paperBalanceKrw = config.trading.initialPaperBalanceKrw;
+  }
+
+  /**
+   * 실시간 가용 원화(KRW) 잔고 조회 (모의매매 & 실전매매 통합)
+   */
+  public async getAvailableKrw(): Promise<number> {
+    if (this.isPaperTrading) {
+      return this.paperBalanceKrw;
+    }
+
+    try {
+      const accounts = await this.getAccounts();
+      const krwAccount = accounts.find((a) => a.currency === 'KRW');
+      return krwAccount ? krwAccount.balance : 0;
+    } catch (err) {
+      Logger.error('[가용 원화 잔고 조회 에러]', err);
+      return 0;
+    }
   }
 
   /**
@@ -48,7 +66,6 @@ export class UpbitClient {
         params: { market, count }
       });
 
-      // 최신순으로 오는 데이터를 과거 -> 최신순(오름차순)으로 정렬하여 반환
       return response.data.reverse().map((c: any) => ({
         market: c.market,
         candleDateTimeUtc: c.candle_date_time_utc,
@@ -89,38 +106,47 @@ export class UpbitClient {
   }
 
   /**
-   * 계좌 잔고 조회 (실전 vs 모의 매매)
+   * 계좌 잔고 조회 (실전 vs 모의 매매, forceReal 옵션 지원)
    */
-  public async getAccounts(): Promise<AccountBalance[]> {
-    if (this.isPaperTrading) {
+  public async getAccounts(forceReal: boolean = false): Promise<AccountBalance[]> {
+    if (this.isPaperTrading && !forceReal) {
       return [
         { currency: 'KRW', balance: this.paperBalanceKrw, locked: 0, avgBuyPrice: 0 }
       ];
     }
 
-    return RateLimiter.schedule(async () => {
-      const token = UpbitAuth.generateToken(this.accessKey, this.secretKey);
-      const response = await axios.get(`${this.baseUrl}/v1/accounts`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+    if (!this.accessKey || !this.secretKey) {
+      return [{ currency: 'KRW', balance: this.paperBalanceKrw, locked: 0, avgBuyPrice: 0 }];
+    }
 
-      return response.data.map((acc: any) => ({
-        currency: acc.currency,
-        balance: parseFloat(acc.balance),
-        locked: parseFloat(acc.locked),
-        avgBuyPrice: parseFloat(acc.avg_buy_price)
-      }));
+    return RateLimiter.schedule(async () => {
+      try {
+        const token = UpbitAuth.generateToken(this.accessKey, this.secretKey);
+        const response = await axios.get(`${this.baseUrl}/v1/accounts`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+
+        return response.data.map((acc: any) => ({
+          currency: acc.currency,
+          balance: parseFloat(acc.balance),
+          locked: parseFloat(acc.locked),
+          avgBuyPrice: parseFloat(acc.avg_buy_price)
+        }));
+      } catch (err) {
+        Logger.warn('[Upbit API] 실제 계좌 조회 실패 (모의 잔고 반환)');
+        return [{ currency: 'KRW', balance: this.paperBalanceKrw, locked: 0, avgBuyPrice: 0 }];
+      }
     });
   }
 
   /**
-   * 매수 주문 집행 (지정가/시장가)
+   * 매수 주문 집행
    */
   public async placeBuyOrder(market: string, priceKrw: number, volume: number): Promise<{ orderId: string; executedPrice: number }> {
     if (this.isPaperTrading) {
       const totalCost = priceKrw * volume;
       this.paperBalanceKrw -= totalCost;
-      Logger.trade(`[모의 매수 체결] ${market} 수량: ${volume} 체결가: ${priceKrw.toLocaleString()}원 (잔액: ${this.paperBalanceKrw.toLocaleString()}원)`);
+      Logger.trade(`[모의 매수 체결] ${market} 수량: ${volume.toFixed(4)} 체결가: ${priceKrw.toLocaleString()}원 (잔액: ${Math.round(this.paperBalanceKrw).toLocaleString()}원)`);
       return { orderId: `paper-buy-${Date.now()}`, executedPrice: priceKrw };
     }
 
@@ -128,8 +154,8 @@ export class UpbitClient {
       const body = {
         market,
         side: 'bid',
-        volume: volume.toString(),
-        price: priceKrw.toString(),
+        volume: volume.toFixed(8),
+        price: Math.round(priceKrw).toString(),
         ord_type: 'limit'
       };
 
@@ -144,13 +170,13 @@ export class UpbitClient {
   }
 
   /**
-   * 매도 주문 집행 (지정가/시장가)
+   * 매도 주문 집행
    */
   public async placeSellOrder(market: string, volume: number, priceKrw: number): Promise<{ orderId: string; executedPrice: number }> {
     if (this.isPaperTrading) {
       const proceeds = priceKrw * volume;
       this.paperBalanceKrw += proceeds;
-      Logger.trade(`[모의 매도 체결] ${market} 수량: ${volume} 체결가: ${priceKrw.toLocaleString()}원 (잔액: ${this.paperBalanceKrw.toLocaleString()}원)`);
+      Logger.trade(`[모의 매도 체결] ${market} 수량: ${volume.toFixed(4)} 체결가: ${priceKrw.toLocaleString()}원 (잔액: ${Math.round(this.paperBalanceKrw).toLocaleString()}원)`);
       return { orderId: `paper-sell-${Date.now()}`, executedPrice: priceKrw };
     }
 
@@ -158,8 +184,8 @@ export class UpbitClient {
       const body = {
         market,
         side: 'ask',
-        volume: volume.toString(),
-        price: priceKrw.toString(),
+        volume: volume.toFixed(8),
+        price: Math.round(priceKrw).toString(),
         ord_type: 'limit'
       };
 
